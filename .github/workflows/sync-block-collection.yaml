@@ -1,16 +1,61 @@
-name: Sync to aem-block-collection
+name: Sync to Adobe Cloud Manager
+
 on:
   push:
-    branches: [main]
+    branches: [dev]
   workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to sync
+        required: true
+        default: dev
+        type: choice
+        options: [dev]
+      dry_run:
+        description: Preview the push without sending it to Adobe
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: adobe-cm-sync-${{ github.event.inputs.branch || github.ref_name }}
+  cancel-in-progress: false
 
 jobs:
   sync:
+    name: Push ${{ github.event.inputs.branch || github.ref_name }} to Adobe AEM repo
     runs-on: ubuntu-latest
-    # never run in a repo derived from this template — only the canonical source
-    if: github.repository == 'adobe/aem-boilerplate'
+    environment: adobe-aem-sync-${{ github.event.inputs.branch || github.ref_name }}
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v6
-      - run: ./sync-block-collection.sh
+      - name: Checkout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.branch || github.ref_name }}
+
+      - name: Push to Adobe Cloud Manager repo
         env:
-          GITHUB_TOKEN: ${{ secrets.BLOCK_COLLECTION_SYNC_TOKEN }}
+          ADOBE_CM_REPO_URL: https://git.cloudmanager.adobe.com/rbc/axp0-rbc-aem-digital-commerce/
+          ADOBE_CM_USERNAME: ${{ secrets.ADOBE_CM_USERNAME }}
+          ADOBE_CM_TOKEN: ${{ secrets.ADOBE_CM_TOKEN }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+          TARGET_BRANCH: ${{ github.event.inputs.branch || github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          : "${ADOBE_CM_USERNAME:?ADOBE_CM_USERNAME is required}"
+          : "${ADOBE_CM_TOKEN:?ADOBE_CM_TOKEN is required}"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add adobe "https://${ADOBE_CM_USERNAME}:${ADOBE_CM_TOKEN}@${ADOBE_CM_REPO_URL#https://}"
+          trap 'git remote remove adobe' EXIT
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "Dry run: showing what would be pushed to Adobe branch '$TARGET_BRANCH'."
+            git push --dry-run --force adobe "HEAD:${TARGET_BRANCH}"
+          else
+            git push --force adobe "HEAD:${TARGET_BRANCH}"
+          fi
